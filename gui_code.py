@@ -17,7 +17,10 @@ class ESP32ControllerApp(ctk.CTk):
 
         self.title("ESP32 Train Controller")
         self.geometry("900x600")
-        self.attributes("-zoomed", True)  # جایگزین برای لینوکس
+        try:
+            self.state("zoomed")  # ویندوز
+        except:
+            self.attributes("-zoomed", True)  # لینوکس
         self.configure(fg_color="#1f1f2e")
 
         # متغیرها
