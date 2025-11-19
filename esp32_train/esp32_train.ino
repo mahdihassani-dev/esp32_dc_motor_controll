@@ -1,38 +1,48 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include "DYPlayerArduino.h" // کتابخانه ماژول موسیقی از کد ۱
+#include <esp_now.h> // اضافه شده برای ESP-NOW
+
+// --- MAC address ESP32 دوم (ایستگاه) – جایگزین کنید با MAC واقعی ---
+uint8_t stationMacAddress[] = {0x54, 0x43, 0xB2, 0x46, 0x03, 0x14}; // مثلاً {0x24, 0x0A, 0xC4, 0xXX, 0xXX, 0xXX}
+
+// struct برای پیام ESP-NOW
+typedef struct {
+  char command[20];
+} Message;
+
+// متغیر برای تشخیص تغییر وضعیت قفل (برای ارسال پیام فقط در تغییر)
+bool previousMotorLocked = false;
+
+// callback برای ارسال ESP-NOW (برای چک موفقیت)
+void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  Serial.print("ESP-NOW Send Status: ");
+  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Success" : "Fail");
+}
 
 // --- 1. تعاریف پین‌ها (ادغام شده از هر دو کد) ---
-
 // موتور (از کد ۱ - با PWM)
 const int ENA = 14; // پین کنترل سرعت (PWM)
 const int IN1 = 27; // پین جهت ۱
 const int IN2 = 26; // پین جهت ۲
-
 // بخار (از هر دو کد)
 const int STEAM_PIN = 15;
-
 // ماژول موسیقی (از کد ۱)
 // Serial2 به طور پیش‌فرض روی پین‌های 16 (RX) و 17 (TX) است
-
 // سنسورها (از کد ۲)
-const int PROBE_LOW_PIN = 19;     // سنسور سطح آب (پایین/متوسط)
-const int PROBE_HIGH_PIN = 18;    // سنسور سطح آب (بالا)
-const int REED_SWITCH_PIN = 32;   // سنسور ایستگاه (Reed Switch)
-
+const int PROBE_LOW_PIN = 19;      // سنسور سطح آب (پایین/متوسط)
+const int PROBE_HIGH_PIN = 18;     // سنسور سطح آب (بالا)
+const int REED_SWITCH_PIN = 32;    // سنسور ایستگاه (Reed Switch)
 // --- 2. تنظیمات شبکه و سرور ---
 const char* ssid = "Esp32";
 const char* password = "1234567876543212";
 WebServer server(80);
-
 // --- 3. ماژول موسیقی ---
 DY::Player player(&Serial2);
-
 // --- 4. متغیرهای برنامه خودکار (از کد ۱) ---
 bool autoRunning = false;
 unsigned long autoStartTime = 0;
 unsigned long totalDuration = 120000; // پیش‌فرض ۲ دقیقه
-
 struct StopEvent {
   unsigned long startTime;
   unsigned long duration;
@@ -48,31 +58,25 @@ struct MusicEvent {
   int currentRepeat = 0;
   bool playing = false;
 };
-
 StopEvent stops[10];
 int numStops = 0;
 SteamEvent steams[10];
 int numSteams = 0;
 MusicEvent musics[10];
 int numMusics = 0;
-
 // --- 5. متغیرهای وضعیت سراسری (ادغام شده) ---
 bool motorRunning = false;
 int currentSpeed = 200; // سرعت پیش‌فرض (از کد ۱)
 bool currentDirection = true; // true = جلو
 bool steamActive = false;
-
 // وضعیت آب (از کد ۲)
 String tankStatus = "در حال بررسی...";
 unsigned long lastWaterCheck = 0;
 const unsigned long WATER_CHECK_INTERVAL = 500; // 500ms
-
 // منطق توقف اضطراری (از کد ۲)
 bool waitingForRefillStop = false;
 bool motorLockedDueToEmptyTank = false;
-
 // --- 6. توابع کمکی سنسورها (از کد ۲) ---
-
 // خواندن پایدار پین (فیلتر نویز)
 bool stableRead(int pin) {
   int zeros = 0;
@@ -82,23 +86,19 @@ bool stableRead(int pin) {
   }
   return (zeros >= 6); // LOW = آب یا مگنت شناسایی شد
 }
-
 // تعیین وضعیت تانک
 String getTankStatus(bool low, bool high) {
   if (high) return "پر";
   if (low)  return "نیمه‌پر";
   return "خالی";
 }
-
 // --- 7. توابع کمکی کنترل (ادغام شده) ---
-
 void stopMotor() {
   analogWrite(ENA, 0);
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, LOW);
   motorRunning = false;
 }
-
 // 🛑 تابع startMotor به‌روزرسانی شده تا قفل را بررسی کند
 void startMotor() {
   // اگر موتور قفل است، اجازه حرکت نده
@@ -111,7 +111,6 @@ void startMotor() {
   analogWrite(ENA, currentSpeed);
   motorRunning = true;
 }
-
 void stopAll() {
   stopMotor();
   digitalWrite(STEAM_PIN, LOW);
@@ -122,7 +121,6 @@ void stopAll() {
     musics[i].currentRepeat = 0;
   }
 }
-
 // تنظیم برنامه پیش‌فرض (از کد ۱)
 void setDefaultProgram() {
   totalDuration = 120000;
@@ -138,36 +136,30 @@ void setDefaultProgram() {
   musics[1] = {35000, 2, 1};
   musics[2] = {80000, 3, 1};
 }
-
 // --- 8. Setup (ادغام شده) ---
 void setup() {
   Serial.begin(115200);
-
   // راه‌اندازی پین‌های خروجی
   pinMode(ENA, OUTPUT);
   pinMode(IN1, OUTPUT);
   pinMode(IN2, OUTPUT);
   pinMode(STEAM_PIN, OUTPUT);
-
   // راه‌اندازی پین‌های سنسور (ورودی با PULLUP)
   pinMode(PROBE_LOW_PIN, INPUT_PULLUP);
   pinMode(PROBE_HIGH_PIN, INPUT_PULLUP);
   pinMode(REED_SWITCH_PIN, INPUT_PULLUP);
-
   // توقف همه‌چیز در ابتدا
   stopAll();
-
   // راه‌اندازی ماژول موسیقی
   Serial2.begin(9600, SERIAL_8N1, 16, 17);
   player.begin();
   player.setVolume(25);
   player.setCycleMode(DY::PlayMode::OneOff);
-
   // بارگذاری برنامه پیش‌فرض
   setDefaultProgram();
-
-  // اتصال به WiFi
+  // اتصال به WiFi (لازم برای ESP-NOW)
   Serial.println("Connecting to WiFi...");
+  WiFi.mode(WIFI_STA); // حالت Station برای ESP-NOW
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
@@ -176,6 +168,25 @@ void setup() {
   Serial.println("\nConnected to WiFi!");
   Serial.print("IP Address: ");
   Serial.println(WiFi.localIP());
+  Serial.print("MAC Address: ");
+  Serial.println(WiFi.macAddress()); // برای گرفتن MAC این ESP
+
+  // مقداردهی ESP-NOW
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("Error initializing ESP-NOW");
+    return;
+  }
+  // ثبت callback ارسال
+  esp_now_register_send_cb(OnDataSent);
+  // اضافه کردن peer (ESP32 دوم)
+  esp_now_peer_info_t peerInfo;
+  memcpy(peerInfo.peer_addr, stationMacAddress, 6);
+  peerInfo.channel = 0;  
+  peerInfo.encrypt = false;
+  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+    Serial.println("Failed to add peer");
+    return;
+  }
 
   // راه‌اندازی سرور (ادغام مسیرها)
   server.on("/", HTTP_GET, handleRoot);
@@ -190,18 +201,14 @@ void setup() {
   server.on("/stop_auto", HTTP_GET, handleStopAuto);
   server.on("/reset_default", HTTP_GET, handleResetDefault);
   server.on("/status", HTTP_GET, handleStatus); // 🆕 مسیر جدید برای وضعیت زنده
-
   server.begin();
   Serial.println("Web server started.");
 }
-
 // --- 9. Loop (منطق ادغام شده) ---
 void loop() {
   server.handleClient();
-
   // --- بخش ۱: منطق سنسورها (از کد ۲) ---
   // این بخش همیشه اجرا می‌شود تا وضعیت قفل‌ها را مدیریت کند
-
   // ۱.الف: بررسی سطح آب (هر ۵۰۰ میلی‌ثانیه)
   if (millis() - lastWaterCheck >= WATER_CHECK_INTERVAL) {
     lastWaterCheck = millis();
@@ -210,13 +217,11 @@ void loop() {
       bool low = stableRead(PROBE_LOW_PIN);
       bool high = stableRead(PROBE_HIGH_PIN);
       tankStatus = getTankStatus(low, high);
-
       // اگر مخزن خالی شد و موتور روشن بود، منتظر ایستگاه شو
       if (tankStatus == "خالی" && motorRunning && !waitingForRefillStop && !motorLockedDueToEmptyTank) {
         waitingForRefillStop = true;
         Serial.println("Water EMPTY. Waiting for refill station...");
       }
-
       // اگر موتور قفل بود و مخزن پر شد، قفل را باز کن
       if (motorLockedDueToEmptyTank && tankStatus == "پر") {
         Serial.println("Tank FULL. Motor unlocked.");
@@ -224,7 +229,6 @@ void loop() {
       }
     }
   }
-
   // ۱.ب: بررسی ایستگاه (Reed Switch)
   if (waitingForRefillStop) {
     // اگر ایستگاه شناسایی شد
@@ -236,22 +240,38 @@ void loop() {
     }
   }
 
+  // 🆕 بخش ESP-NOW: ارسال پیام بر اساس تغییر وضعیت قفل
+  if (motorLockedDueToEmptyTank != previousMotorLocked) {
+    Message msg;
+    if (motorLockedDueToEmptyTank) {
+      strcpy(msg.command, "start_filling"); // شروع پر کردن (وقتی قفل شد)
+      Serial.println("Sending ESP-NOW: start_filling");
+    } else {
+      strcpy(msg.command, "stop_filling"); // پایان پر کردن (وقتی پر شد)
+      Serial.println("Sending ESP-NOW: stop_filling");
+    }
+    esp_err_t result = esp_now_send(stationMacAddress, (uint8_t *) &msg, sizeof(msg));
+    if (result == ESP_OK) {
+      Serial.println("ESP-NOW message sent");
+    } else {
+      Serial.println("Error sending ESP-NOW message");
+    }
+    previousMotorLocked = motorLockedDueToEmptyTank;
+  }
+
   // --- بخش ۲: منطق برنامه خودکار (از کد ۱) ---
   if (autoRunning) {
     unsigned long currentTime = millis() - autoStartTime;
-
     // پایان برنامه
     if (currentTime >= totalDuration) {
       stopAll();
       autoRunning = false;
       return;
     }
-
     // 🛑 بررسی قفل اضطراری
     if (motorLockedDueToEmptyTank) {
       stopMotor(); // اطمینان از توقف موتور
     }
-
     // مدیریت توقف‌ها
     bool inStop = false;
     for (int i = 0; i < numStops; i++) {
@@ -265,7 +285,6 @@ void loop() {
     if (!inStop && !motorRunning && !motorLockedDueToEmptyTank) {
       startMotor(); // startMotor جدید ما، قفل را بررسی می‌کند
     }
-
     // مدیریت بخار (بدون تغییر)
     bool shouldSteam = false;
     for (int i = 0; i < numSteams; i++) {
@@ -281,7 +300,6 @@ void loop() {
       digitalWrite(STEAM_PIN, LOW);
       steamActive = false;
     }
-
     // مدیریت موسیقی (بدون تغییر)
     for (int i = 0; i < numMusics; i++) {
       if (currentTime >= musics[i].startTime && !musics[i].playing && musics[i].currentRepeat < musics[i].repeats) {
