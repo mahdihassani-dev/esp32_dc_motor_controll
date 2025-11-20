@@ -1,10 +1,10 @@
 #include <WiFi.h>
 #include <WebServer.h>
-#include "DYPlayerArduino.h" // کتابخانه ماژول موسیقی از کد ۱
-#include <esp_now.h> // اضافه شده برای ESP-NOW
+#include "DYPlayerArduino.h"  // کتابخانه ماژول موسیقی از کد ۱
+#include <esp_now.h>          // اضافه شده برای ESP-NOW
 
 // --- MAC address ESP32 دوم (ایستگاه) – جایگزین کنید با MAC واقعی ---
-uint8_t stationMacAddress[] = {0x54, 0x43, 0xB2, 0x46, 0x03, 0x14}; // مثلاً {0x24, 0x0A, 0xC4, 0xXX, 0xXX, 0xXX}
+uint8_t stationMacAddress[] = { 0x54, 0x43, 0xB2, 0x46, 0x03, 0x14 };  // مثلاً {0x24, 0x0A, 0xC4, 0xXX, 0xXX, 0xXX}
 
 // struct برای پیام ESP-NOW
 typedef struct {
@@ -22,27 +22,27 @@ void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
 
 // --- 1. تعاریف پین‌ها (ادغام شده از هر دو کد) ---
 // موتور (از کد ۱ - با PWM)
-const int ENA = 14; // پین کنترل سرعت (PWM)
-const int IN1 = 27; // پین جهت ۱
-const int IN2 = 26; // پین جهت ۲
+const int ENB = 14;  // پین کنترل سرعت (PWM)
+const int IN3 = 27;  // پین جهت ۱
+const int IN4 = 26;  // پین جهت ۲
 // بخار (از هر دو کد)
 const int STEAM_PIN = 15;
 // ماژول موسیقی (از کد ۱)
 // Serial2 به طور پیش‌فرض روی پین‌های 16 (RX) و 17 (TX) است
 // سنسورها (از کد ۲)
-const int PROBE_LOW_PIN = 19;      // سنسور سطح آب (پایین/متوسط)
-const int PROBE_HIGH_PIN = 18;     // سنسور سطح آب (بالا)
-const int REED_SWITCH_PIN = 32;    // سنسور ایستگاه (Reed Switch)
+const int PROBE_LOW_PIN = 19;    // سنسور سطح آب (پایین/متوسط)
+const int PROBE_HIGH_PIN = 18;   // سنسور سطح آب (بالا)
+const int REED_SWITCH_PIN = 32;  // سنسور ایستگاه (Reed Switch)
 // --- 2. تنظیمات شبکه و سرور ---
-const char* ssid = "Esp32";
-const char* password = "1234567876543212";
+const char *ssid = "Esp32";
+const char *password = "1234567876543212";
 WebServer server(80);
 // --- 3. ماژول موسیقی ---
 DY::Player player(&Serial2);
 // --- 4. متغیرهای برنامه خودکار (از کد ۱) ---
 bool autoRunning = false;
 unsigned long autoStartTime = 0;
-unsigned long totalDuration = 120000; // پیش‌فرض ۲ دقیقه
+unsigned long totalDuration = 120000;  // پیش‌فرض ۲ دقیقه
 struct StopEvent {
   unsigned long startTime;
   unsigned long duration;
@@ -66,37 +66,59 @@ MusicEvent musics[10];
 int numMusics = 0;
 // --- 5. متغیرهای وضعیت سراسری (ادغام شده) ---
 bool motorRunning = false;
-int currentSpeed = 200; // سرعت پیش‌فرض (از کد ۱)
-bool currentDirection = true; // true = جلو
+int currentSpeed = 200;        // سرعت پیش‌فرض (از کد ۱)
+bool currentDirection = true;  // true = جلو
 bool steamActive = false;
 // وضعیت آب (از کد ۲)
 String tankStatus = "در حال بررسی...";
 unsigned long lastWaterCheck = 0;
-const unsigned long WATER_CHECK_INTERVAL = 500; // 500ms
+const unsigned long WATER_CHECK_INTERVAL = 500;  // 500ms
 // منطق توقف اضطراری (از کد ۲)
 bool waitingForRefillStop = false;
 bool motorLockedDueToEmptyTank = false;
 // --- 6. توابع کمکی سنسورها (از کد ۲) ---
 // خواندن پایدار پین (فیلتر نویز)
+
+// متغیر برای تشخیص پیام دریافتی
+String incomingCommand = "";
+// تابع دریافت پیام برای قطار
+void OnDataRecv(const esp_now_recv_info *recv_info, const uint8_t *incomingData, int len) {
+  Message msg;
+  memcpy(&msg, incomingData, sizeof(msg));
+  incomingCommand = String(msg.command);
+  Serial.print("Message from Station: ");
+  Serial.println(incomingCommand);
+
+  // اگر فرمان حرکت آمد، قفل را باز کن
+  if (incomingCommand == "train_go") {
+    if (motorLockedDueToEmptyTank) {
+      Serial.println("GO signal received! Unlocking motor...");
+      motorLockedDueToEmptyTank = false;  // 🔓 باز کردن قفل حرکت
+      previousMotorLocked = false;        // ریست کردن وضعیت قبلی
+      // اختیاری: اگر در حالت خودکار بودیم، موتور خود به خود در loop روشن می‌شود
+    }
+  }
+}
+
 bool stableRead(int pin) {
   int zeros = 0;
   for (int i = 0; i < 10; i++) {
     if (digitalRead(pin) == LOW) zeros++;
     delay(2);
   }
-  return (zeros >= 6); // LOW = آب یا مگنت شناسایی شد
+  return (zeros >= 6);  // LOW = آب یا مگنت شناسایی شد
 }
 // تعیین وضعیت تانک
 String getTankStatus(bool low, bool high) {
   if (high) return "پر";
-  if (low)  return "نیمه‌پر";
+  if (low) return "نیمه‌پر";
   return "خالی";
 }
 // --- 7. توابع کمکی کنترل (ادغام شده) ---
 void stopMotor() {
-  analogWrite(ENA, 0);
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, LOW);
+  analogWrite(ENB, 0);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, LOW);
   motorRunning = false;
 }
 // 🛑 تابع startMotor به‌روزرسانی شده تا قفل را بررسی کند
@@ -106,9 +128,9 @@ void startMotor() {
     stopMotor();
     return;
   }
-  digitalWrite(IN1, currentDirection ? HIGH : LOW);
-  digitalWrite(IN2, currentDirection ? LOW : HIGH);
-  analogWrite(ENA, currentSpeed);
+  digitalWrite(IN3, currentDirection ? HIGH : LOW);
+  digitalWrite(IN4, currentDirection ? LOW : HIGH);
+  analogWrite(ENB, currentSpeed);
   motorRunning = true;
 }
 void stopAll() {
@@ -125,24 +147,24 @@ void stopAll() {
 void setDefaultProgram() {
   totalDuration = 120000;
   numStops = 2;
-  stops[0] = {30000, 15000};
-  stops[1] = {75000, 15000};
+  stops[0] = { 30000, 15000 };
+  stops[1] = { 75000, 15000 };
   numSteams = 3;
-  steams[0] = {0, 30000};
-  steams[1] = {45000, 30000};
-  steams[2] = {90000, 30000};
+  steams[0] = { 0, 30000 };
+  steams[1] = { 45000, 30000 };
+  steams[2] = { 90000, 30000 };
   numMusics = 3;
-  musics[0] = {0, 1, 1};
-  musics[1] = {35000, 2, 1};
-  musics[2] = {80000, 3, 1};
+  musics[0] = { 0, 1, 1 };
+  musics[1] = { 35000, 2, 1 };
+  musics[2] = { 80000, 3, 1 };
 }
 // --- 8. Setup (ادغام شده) ---
 void setup() {
   Serial.begin(115200);
   // راه‌اندازی پین‌های خروجی
-  pinMode(ENA, OUTPUT);
-  pinMode(IN1, OUTPUT);
-  pinMode(IN2, OUTPUT);
+  pinMode(ENB, OUTPUT);
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT);
   pinMode(STEAM_PIN, OUTPUT);
   // راه‌اندازی پین‌های سنسور (ورودی با PULLUP)
   pinMode(PROBE_LOW_PIN, INPUT_PULLUP);
@@ -159,7 +181,7 @@ void setup() {
   setDefaultProgram();
   // اتصال به WiFi (لازم برای ESP-NOW)
   Serial.println("Connecting to WiFi...");
-  WiFi.mode(WIFI_STA); // حالت Station برای ESP-NOW
+  WiFi.mode(WIFI_STA);  // حالت Station برای ESP-NOW
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
@@ -169,7 +191,7 @@ void setup() {
   Serial.print("IP Address: ");
   Serial.println(WiFi.localIP());
   Serial.print("MAC Address: ");
-  Serial.println(WiFi.macAddress()); // برای گرفتن MAC این ESP
+  Serial.println(WiFi.macAddress());  // برای گرفتن MAC این ESP
 
   // مقداردهی ESP-NOW
   if (esp_now_init() != ESP_OK) {
@@ -178,10 +200,11 @@ void setup() {
   }
   // ثبت callback ارسال
   esp_now_register_send_cb(OnDataSent);
+  esp_now_register_recv_cb(OnDataRecv);
   // اضافه کردن peer (ESP32 دوم)
   esp_now_peer_info_t peerInfo;
   memcpy(peerInfo.peer_addr, stationMacAddress, 6);
-  peerInfo.channel = 0;  
+  peerInfo.channel = 0;
   peerInfo.encrypt = false;
   if (esp_now_add_peer(&peerInfo) != ESP_OK) {
     Serial.println("Failed to add peer");
@@ -200,7 +223,7 @@ void setup() {
   server.on("/start_auto", HTTP_GET, handleStartAuto);
   server.on("/stop_auto", HTTP_GET, handleStopAuto);
   server.on("/reset_default", HTTP_GET, handleResetDefault);
-  server.on("/status", HTTP_GET, handleStatus); // 🆕 مسیر جدید برای وضعیت زنده
+  server.on("/status", HTTP_GET, handleStatus);  // 🆕 مسیر جدید برای وضعیت زنده
   server.begin();
   Serial.println("Web server started.");
 }
@@ -222,41 +245,40 @@ void loop() {
         waitingForRefillStop = true;
         Serial.println("Water EMPTY. Waiting for refill station...");
       }
-      // اگر موتور قفل بود و مخزن پر شد، قفل را باز کن
+
+      // اگر موتور قفل است (در حال سوخت‌گیری) و مخزن پر شد
       if (motorLockedDueToEmptyTank && tankStatus == "پر") {
-        Serial.println("Tank FULL. Motor unlocked.");
-        motorLockedDueToEmptyTank = false;
+        // ما فقط صبر می‌کنیم. هیچ کاری نمی‌کنیم!
+        // چون وقتی وضعیت قفل تغییر نکند، پیام "stop_filling" ارسال نمی‌شود.
+        // باید دستی پیام "stop_filling" را ارسال کنیم اما قفل را نگه داریم.
+
+        // برای جلوگیری از ارسال تکراری، یک فلگ کمکی نیاز داریم یا از منطق زیر استفاده می‌کنیم:
+        // بهتر است منطق ارسال پیام در پایین loop را کمی تغییر دهیم.
+        if (previousMotorLocked == true) {  // یعنی ما فکر می‌کردیم هنوز باید پر کنیم
+          Message msg;
+          strcpy(msg.command, "stop_filling");
+          esp_now_send(stationMacAddress, (uint8_t *)&msg, sizeof(msg));
+          Serial.println("Tank Full. Sent stop_filling. Waiting for GO signal...");
+          previousMotorLocked = false;  // این فلگ را تغییر می‌دهیم تا دیگر پیام نفرستد
+                                        // نکته مهم: motorLockedDueToEmptyTank هنوز TRUE است!
+        }
       }
     }
   }
   // ۱.ب: بررسی ایستگاه (Reed Switch)
   if (waitingForRefillStop) {
-    // اگر ایستگاه شناسایی شد
     if (stableRead(REED_SWITCH_PIN)) {
-      Serial.println("Refill station detected. Stopping and LOCKING motor.");
-      stopMotor(); // 🛑 استفاده از stopMotor کد ۱ (که ENA را کنترل می‌کند)
+      stopMotor();
       waitingForRefillStop = false;
-      motorLockedDueToEmptyTank = true; // موتور را قفل کن
-    }
-  }
+      motorLockedDueToEmptyTank = true;
+      previousMotorLocked = true;  // نشان می‌دهد که ما در حالت "نیاز به پر شدن" هستیم
 
-  // 🆕 بخش ESP-NOW: ارسال پیام بر اساس تغییر وضعیت قفل
-  if (motorLockedDueToEmptyTank != previousMotorLocked) {
-    Message msg;
-    if (motorLockedDueToEmptyTank) {
-      strcpy(msg.command, "start_filling"); // شروع پر کردن (وقتی قفل شد)
-      Serial.println("Sending ESP-NOW: start_filling");
-    } else {
-      strcpy(msg.command, "stop_filling"); // پایان پر کردن (وقتی پر شد)
-      Serial.println("Sending ESP-NOW: stop_filling");
+      // ارسال پیام شروع
+      Message msg;
+      strcpy(msg.command, "start_filling");
+      esp_now_send(stationMacAddress, (uint8_t *)&msg, sizeof(msg));
+      Serial.println("Station detected. Locked. Sent start_filling.");
     }
-    esp_err_t result = esp_now_send(stationMacAddress, (uint8_t *) &msg, sizeof(msg));
-    if (result == ESP_OK) {
-      Serial.println("ESP-NOW message sent");
-    } else {
-      Serial.println("Error sending ESP-NOW message");
-    }
-    previousMotorLocked = motorLockedDueToEmptyTank;
   }
 
   // --- بخش ۲: منطق برنامه خودکار (از کد ۱) ---
@@ -270,7 +292,7 @@ void loop() {
     }
     // 🛑 بررسی قفل اضطراری
     if (motorLockedDueToEmptyTank) {
-      stopMotor(); // اطمینان از توقف موتور
+      stopMotor();  // اطمینان از توقف موتور
     }
     // مدیریت توقف‌ها
     bool inStop = false;
@@ -283,7 +305,7 @@ void loop() {
     }
     // 🛑 شروع مجدد موتور فقط اگر در توقف برنامه‌ریزی شده نباشد و قفل هم نباشد
     if (!inStop && !motorRunning && !motorLockedDueToEmptyTank) {
-      startMotor(); // startMotor جدید ما، قفل را بررسی می‌کند
+      startMotor();  // startMotor جدید ما، قفل را بررسی می‌کند
     }
     // مدیریت بخار (بدون تغییر)
     bool shouldSteam = false;
@@ -703,11 +725,11 @@ document.head.appendChild(style);
 void handleControl() {
   // اگر موتور قفل است، هیچ فرمان دستی اجرا نشود
   if (motorLockedDueToEmptyTank) {
-    stopMotor(); // اطمینان از توقف
+    stopMotor();  // اطمینان از توقف
     server.send(200, "text/plain", "Motor Locked (Tank Empty)");
     return;
   }
-  
+
   // اگر برنامه خودکار روشن است، کنترل دستی کار نکند
   if (autoRunning) {
     server.send(200, "text/plain", "Auto program is running");
@@ -717,9 +739,9 @@ void handleControl() {
   if (server.hasArg("speed") && server.hasArg("direction")) {
     currentSpeed = server.arg("speed").toInt();
     currentDirection = server.arg("direction").toInt() == 1;
-    
-    startMotor(); // استفاده از تابع جدید که قفل را چک می‌کند
-    
+
+    startMotor();  // استفاده از تابع جدید که قفل را چک می‌کند
+
     String directionStr = currentDirection ? "Forward" : "Backward";
     server.send(200, "text/plain", "Running " + directionStr + " at " + String(currentSpeed));
   } else {
@@ -734,14 +756,14 @@ void handlePin15() {
   if (server.hasArg("status")) {
     bool pinStatus = server.arg("status").toInt() == 1;
     digitalWrite(STEAM_PIN, pinStatus ? HIGH : LOW);
-    steamActive = pinStatus; // 🆕 به‌روزرسانی وضعیت سراسری
+    steamActive = pinStatus;  // 🆕 به‌روزرسانی وضعیت سراسری
     server.send(200, "text/plain", pinStatus ? "ON" : "OFF");
   }
 }
 
 // هندلرهای موسیقی (از کد ۱ - با کمی تغییر)
 void handlePlay() {
-  if (autoRunning) return; // عدم دخالت در حالت خودکار
+  if (autoRunning) return;  // عدم دخالت در حالت خودکار
   if (server.hasArg("song")) {
     int songNumber = server.arg("song").toInt();
     player.setCycleMode(DY::PlayMode::RepeatOne);
@@ -805,7 +827,7 @@ void handleStartAuto() {
       server.send(200, "text/plain", "خطا: مخزن خالی است!");
       return;
     }
-    stopAll(); // ریست کردن همه‌چیز قبل از شروع
+    stopAll();  // ریست کردن همه‌چیز قبل از شروع
     autoRunning = true;
     autoStartTime = millis();
     // startMotor(); // موتور در حلقه loop خودکار روشن می‌شود
@@ -844,6 +866,6 @@ void handleStatus() {
   json += ",\"auto_running\":" + String(autoRunning);
   json += ",\"player_status\":" + String(playerStatus);
   json += "}";
-  
+
   server.send(200, "application/json", json);
 }
